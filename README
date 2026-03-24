@@ -1,3 +1,3 @@
-Arihtmetic Expression Interpreter
+CREPL: An Arihtmetic Expression Interpreter
 
-Implemented a recursive descent parser
+arithmetic expression interpreter with a repl. Implemented a simple recursive descent parser.

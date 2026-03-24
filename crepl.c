@@ -4,33 +4,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Dynamic Array
-typedef struct allocator {
-  uint8_t *start;
-  uint8_t *prev;
-  uint8_t *top;
-  uint64_t size;
-} allocator;
-
+/*
+ * Small dynamic array implementation
+ */
 typedef struct dynamic_array {
-  allocator *allocator;
   void *items;
   unsigned int item_size;
   unsigned int count;
   unsigned int capacity;
 } dynamic_array;
 
-void dynamic_array_init_allocator(dynamic_array *da, unsigned int item_size,
-                                  allocator *allocator) {
-  da->allocator = allocator;
+void dynamic_array_init(dynamic_array *da, unsigned int item_size) {
   da->items = NULL;
   da->item_size = item_size;
   da->count = 0;
   da->capacity = 0;
-}
-
-void dynamic_array_init(dynamic_array *da, unsigned int item_size) {
-  dynamic_array_init_allocator(da, item_size, NULL);
 }
 
 int dynamic_array_get(dynamic_array *da, unsigned int index, void *item) {
@@ -52,7 +40,7 @@ int dynamic_array_append(dynamic_array *da, const void *item) {
   if (da->count >= da->capacity) {
     unsigned int new_capacity = da->capacity * 2;
     if (new_capacity == 0) {
-      new_capacity = 4; // default initial capacity
+      new_capacity = 4;
     }
 
     void *new_items = realloc(da->items, new_capacity * da->item_size);
@@ -71,7 +59,17 @@ int dynamic_array_append(dynamic_array *da, const void *item) {
   return 0;
 }
 
-// Tokenization
+void dynamic_array_free(dynamic_array *da) {
+  free(da->items);
+  da->items = NULL;
+  da->item_size = 0;
+  da->count = 0;
+  da->capacity = 0;
+}
+
+/*
+ * Tokens
+ */
 typedef enum token_kind {
   TOKEN_TERM,
 
@@ -102,6 +100,7 @@ void tokenize(dynamic_array *tokens, char *buffer) {
       continue;
     } else if (*current == '\0') {
       token.kind = TOKEN_END;
+      token.value = 0;
     } else if (isdigit(*current)) {
       token.kind = TOKEN_TERM;
       char *end;
@@ -109,24 +108,31 @@ void tokenize(dynamic_array *tokens, char *buffer) {
       current = end;
     } else if (*current == '+') {
       token.kind = TOKEN_OPERATION_ADDITION;
+      token.value = 0;
       current++;
     } else if (*current == '-') {
       token.kind = TOKEN_OPERATION_SUBTRACTION;
+      token.value = 0;
       current++;
     } else if (*current == '*') {
       token.kind = TOKEN_OPERATION_MULTIPLICATION;
+      token.value = 0;
       current++;
     } else if (*current == '/') {
       token.kind = TOKEN_OPERATION_DIVISION;
+      token.value = 0;
       current++;
     } else if (*current == '(') {
       token.kind = TOKEN_BRACKET_OPEN;
+      token.value = 0;
       current++;
     } else if (*current == ')') {
       token.kind = TOKEN_BRACKET_CLOSE;
+      token.value = 0;
       current++;
     } else {
       token.kind = TOKEN_INVALID;
+      token.value = 0;
       current++;
     }
 
@@ -134,7 +140,9 @@ void tokenize(dynamic_array *tokens, char *buffer) {
   } while (token.kind != TOKEN_END);
 }
 
-// Expressions
+/*
+ * AST
+ */
 typedef enum expr_kind {
   EXPR_TERM,
 
@@ -155,7 +163,9 @@ typedef struct expr_node {
   };
 } expr_node;
 
-// Parser
+/*
+ * Parser
+ */
 typedef struct parser {
   dynamic_array *tokens;
   int position;
@@ -173,6 +183,7 @@ void parser_current(parser *p, token *token) {
 void parser_advance(parser *p) { p->position++; }
 
 expr_node *parse_expr(parser *p);
+void free_expr(expr_node *expr); /* forward decl needed by parse_factor */
 
 expr_node *parse_factor(parser *p) {
   token token;
@@ -186,21 +197,28 @@ expr_node *parse_factor(parser *p) {
   } else if (token.kind == TOKEN_BRACKET_OPEN) {
     parser_advance(p);
     expr_node *node = parse_expr(p);
+    if (!node)
+      return NULL;
     parser_current(p, &token);
     if (token.kind != TOKEN_BRACKET_CLOSE) {
-      printf("Syntax error: expected ')'\n");
-      exit(1);
+      fprintf(stderr, "Syntax error: expected ')'\n");
+      free_expr(node);
+      return NULL;
     }
     parser_advance(p);
     return node;
   } else {
-    printf("Syntax error: expected term or '('\n");
-    exit(1);
+    fprintf(stderr, "Syntax error: expected term or '('\n");
+    return NULL;
   }
 }
 
 expr_node *parse_term(parser *p) {
   expr_node *left = parse_factor(p);
+
+  if (!left)
+    return NULL;
+
   while (1) {
     token token;
     parser_current(p, &token);
@@ -209,6 +227,11 @@ expr_node *parse_term(parser *p) {
         token.kind == TOKEN_OPERATION_DIVISION) {
       parser_advance(p);
       expr_node *right = parse_factor(p);
+
+      if (!right) {
+        free_expr(left);
+        return NULL;
+      }
 
       expr_node *parent = malloc(sizeof(expr_node));
       parent->kind = (token.kind == TOKEN_OPERATION_MULTIPLICATION)
@@ -226,6 +249,10 @@ expr_node *parse_term(parser *p) {
 
 expr_node *parse_expr(parser *p) {
   expr_node *left = parse_term(p);
+
+  if (!left)
+    return NULL;
+
   while (1) {
     token token;
     parser_current(p, &token);
@@ -234,6 +261,11 @@ expr_node *parse_expr(parser *p) {
         token.kind == TOKEN_OPERATION_SUBTRACTION) {
       parser_advance(p);
       expr_node *right = parse_term(p);
+
+      if (!right) {
+        free_expr(left);
+        return NULL;
+      }
 
       expr_node *parent = malloc(sizeof(expr_node));
       parent->kind =
@@ -253,17 +285,25 @@ float evaluate_expr(expr_node *parent_expr) {
   case EXPR_TERM:
     return (float)parent_expr->term;
   case EXPR_ADD:
-    return (float)(evaluate_expr(parent_expr->binary.left) +
-                   evaluate_expr(parent_expr->binary.right));
+    return evaluate_expr(parent_expr->binary.left) +
+           evaluate_expr(parent_expr->binary.right);
   case EXPR_SUBTRACT:
-    return (float)(evaluate_expr(parent_expr->binary.left) -
-                   evaluate_expr(parent_expr->binary.right));
+    return evaluate_expr(parent_expr->binary.left) -
+           evaluate_expr(parent_expr->binary.right);
   case EXPR_MULTIPLY:
-    return (float)(evaluate_expr(parent_expr->binary.left) *
-                   evaluate_expr(parent_expr->binary.right));
-  case EXPR_DIVIDE:
-    return (float)(evaluate_expr(parent_expr->binary.left) /
-                   evaluate_expr(parent_expr->binary.right));
+    return evaluate_expr(parent_expr->binary.left) *
+           evaluate_expr(parent_expr->binary.right);
+  case EXPR_DIVIDE: {
+    float divisor = evaluate_expr(parent_expr->binary.right);
+    if (divisor == 0.0f) {
+      fprintf(stderr, "Error: division by zero\n");
+      return 0.0f;
+    }
+    return evaluate_expr(parent_expr->binary.left) / divisor;
+  }
+  default:
+    fprintf(stderr, "Error: unknown expr_kind %d\n", parent_expr->kind);
+    return 0.0f;
   }
 }
 
@@ -282,7 +322,10 @@ int main() {
     char buffer[1024];
 
     printf("\n>>> ");
-    fgets(buffer, sizeof(buffer), stdin);
+    if (fgets(buffer, sizeof(buffer), stdin) == NULL) {
+      printf("\n");
+      break;
+    }
     buffer[strcspn(buffer, "\n")] = '\0';
 
     dynamic_array tokens;
@@ -293,7 +336,10 @@ int main() {
     parser_init(&tokens, &p);
     expr_node *root_expr = parse_expr(&p);
 
-    printf("  = %.2f", evaluate_expr(root_expr));
+    if (root_expr)
+      printf("  = %.2f\n", evaluate_expr(root_expr));
+
     free_expr(root_expr);
+    dynamic_array_free(&tokens);
   }
 }
