@@ -3,10 +3,10 @@ CFLAGS = -std=c11 -g -Wall -Werror -Wextra
 
 OBJ_DIR = ./obj
 
-SRCS = main.c
+SRCS = crepl.c
 OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
 
-TARGET = main
+TARGET = crepl
 
 all: $(TARGET)
 
@@ -25,4 +25,4 @@ clean-obj:
 
 clean: clean-all
 
-.PHONY: all clean-all clean-obj
+.PHONY: all clean clean-all clean-obj
