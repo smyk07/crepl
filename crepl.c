@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +78,8 @@ typedef enum token_kind {
   TOKEN_OPERATION_SUBTRACTION,
   TOKEN_OPERATION_MULTIPLICATION,
   TOKEN_OPERATION_DIVISION,
+  TOKEN_OPERATION_MODULO,
+  TOKEN_OPERATION_EXPONENTIATION,
 
   TOKEN_BRACKET_OPEN,
   TOKEN_BRACKET_CLOSE,
@@ -122,6 +125,14 @@ void tokenize(dynamic_array *tokens, char *buffer) {
       token.kind = TOKEN_OPERATION_DIVISION;
       token.value = 0;
       current++;
+    } else if (*current == '%') {
+      token.kind = TOKEN_OPERATION_MODULO;
+      token.value = 0;
+      current++;
+    } else if (*current == '^') {
+      token.kind = TOKEN_OPERATION_EXPONENTIATION;
+      token.value = 0;
+      current++;
     } else if (*current == '(') {
       token.kind = TOKEN_BRACKET_OPEN;
       token.value = 0;
@@ -150,6 +161,10 @@ typedef enum expr_kind {
   EXPR_SUBTRACT,
   EXPR_MULTIPLY,
   EXPR_DIVIDE,
+  EXPR_MODULO,
+  EXPR_EXPONENTIATION,
+
+  EXPR_UNARY_NEGATE,
 } expr_kind;
 
 typedef struct expr_node {
@@ -159,6 +174,11 @@ typedef struct expr_node {
       struct expr_node *left;
       struct expr_node *right;
     } binary;
+
+    struct {
+      struct expr_node *operand;
+    } unary;
+
     int term;
   };
 } expr_node;
@@ -183,18 +203,33 @@ void parser_current(parser *p, token *token) {
 void parser_advance(parser *p) { p->position++; }
 
 expr_node *parse_expr(parser *p);
+
 void free_expr(expr_node *expr); /* forward decl needed by parse_factor */
 
 expr_node *parse_factor(parser *p) {
   token token;
   parser_current(p, &token);
+
   if (token.kind == TOKEN_TERM) {
     expr_node *node = malloc(sizeof(expr_node));
     node->kind = EXPR_TERM;
     node->term = token.value;
     parser_advance(p);
     return node;
-  } else if (token.kind == TOKEN_BRACKET_OPEN) {
+  }
+
+  else if (token.kind == TOKEN_OPERATION_SUBTRACTION) {
+    parser_advance(p);
+    expr_node *operand = parse_factor(p);
+    if (!operand)
+      return NULL;
+    expr_node *node = malloc(sizeof(expr_node));
+    node->kind = EXPR_UNARY_NEGATE;
+    node->unary.operand = operand;
+    return node;
+  }
+
+  else if (token.kind == TOKEN_BRACKET_OPEN) {
     parser_advance(p);
     expr_node *node = parse_expr(p);
     if (!node)
@@ -207,15 +242,44 @@ expr_node *parse_factor(parser *p) {
     }
     parser_advance(p);
     return node;
-  } else {
+  }
+
+  else {
     fprintf(stderr, "Syntax error: expected term or '('\n");
     return NULL;
   }
 }
 
-expr_node *parse_term(parser *p) {
+expr_node *parse_power(parser *p) {
   expr_node *left = parse_factor(p);
+  if (!left)
+    return NULL;
 
+  token token;
+  parser_current(p, &token);
+
+  if (token.kind == TOKEN_OPERATION_EXPONENTIATION) {
+    parser_advance(p);
+
+    expr_node *right = parse_power(p);
+    if (!right) {
+      free_expr(left);
+      return NULL;
+    }
+
+    expr_node *parent = malloc(sizeof(expr_node));
+    parent->kind = EXPR_EXPONENTIATION;
+    parent->binary.left = left;
+    parent->binary.right = right;
+
+    return parent;
+  }
+
+  return left;
+}
+
+expr_node *parse_term(parser *p) {
+  expr_node *left = parse_power(p);
   if (!left)
     return NULL;
 
@@ -224,26 +288,34 @@ expr_node *parse_term(parser *p) {
     parser_current(p, &token);
 
     if (token.kind == TOKEN_OPERATION_MULTIPLICATION ||
-        token.kind == TOKEN_OPERATION_DIVISION) {
+        token.kind == TOKEN_OPERATION_DIVISION ||
+        token.kind == TOKEN_OPERATION_MODULO) {
       parser_advance(p);
-      expr_node *right = parse_factor(p);
 
+      expr_node *right = parse_power(p);
       if (!right) {
         free_expr(left);
         return NULL;
       }
 
       expr_node *parent = malloc(sizeof(expr_node));
-      parent->kind = (token.kind == TOKEN_OPERATION_MULTIPLICATION)
-                         ? EXPR_MULTIPLY
-                         : EXPR_DIVIDE;
+
+      if (token.kind == TOKEN_OPERATION_MULTIPLICATION)
+        parent->kind = EXPR_MULTIPLY;
+      else if (token.kind == TOKEN_OPERATION_DIVISION)
+        parent->kind = EXPR_DIVIDE;
+      else
+        parent->kind = EXPR_MODULO;
+
       parent->binary.left = left;
       parent->binary.right = right;
+
       left = parent;
     } else {
       break;
     }
   }
+
   return left;
 }
 
@@ -284,15 +356,19 @@ float evaluate_expr(expr_node *parent_expr) {
   switch (parent_expr->kind) {
   case EXPR_TERM:
     return (float)parent_expr->term;
+
   case EXPR_ADD:
     return evaluate_expr(parent_expr->binary.left) +
            evaluate_expr(parent_expr->binary.right);
+
   case EXPR_SUBTRACT:
     return evaluate_expr(parent_expr->binary.left) -
            evaluate_expr(parent_expr->binary.right);
+
   case EXPR_MULTIPLY:
     return evaluate_expr(parent_expr->binary.left) *
            evaluate_expr(parent_expr->binary.right);
+
   case EXPR_DIVIDE: {
     float divisor = evaluate_expr(parent_expr->binary.right);
     if (divisor == 0.0f) {
@@ -301,6 +377,23 @@ float evaluate_expr(expr_node *parent_expr) {
     }
     return evaluate_expr(parent_expr->binary.left) / divisor;
   }
+
+  case EXPR_MODULO: {
+    float divisor = evaluate_expr(parent_expr->binary.right);
+    if (divisor == 0.0f) {
+      fprintf(stderr, "Error: modulo division by zero\n");
+      return 0.0f;
+    }
+    return fmodf(evaluate_expr(parent_expr->binary.left), divisor);
+  }
+
+  case EXPR_EXPONENTIATION:
+    return powf(evaluate_expr(parent_expr->binary.left),
+                evaluate_expr(parent_expr->binary.right));
+
+  case EXPR_UNARY_NEGATE:
+    return -evaluate_expr(parent_expr->unary.operand);
+
   default:
     fprintf(stderr, "Error: unknown expr_kind %d\n", parent_expr->kind);
     return 0.0f;
@@ -310,10 +403,21 @@ float evaluate_expr(expr_node *parent_expr) {
 void free_expr(expr_node *expr) {
   if (!expr)
     return;
-  if (expr->kind != EXPR_TERM) {
+
+  switch (expr->kind) {
+  case EXPR_UNARY_NEGATE:
+    free_expr(expr->unary.operand);
+    break;
+
+  case EXPR_TERM:
+    break;
+
+  default:
     free_expr(expr->binary.left);
     free_expr(expr->binary.right);
+    break;
   }
+
   free(expr);
 }
 

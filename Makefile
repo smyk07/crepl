@@ -1,5 +1,5 @@
 CC = clang
-CFLAGS = -std=c11 -g -Wall -Werror -Wextra
+CFLAGS = -std=c11 -g -Wall -Werror -Wextra -lm -ffast-math
 
 OBJ_DIR = ./obj
 
