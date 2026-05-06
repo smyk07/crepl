@@ -1,5 +1,6 @@
 CC = clang
-CFLAGS = -std=c11 -g -Wall -Werror -Wextra -lm -ffast-math
+CFLAGS = -std=c11 -g -Wall -Werror -Wextra -ffast-math
+LDFLAGS = -lm
 
 OBJ_DIR = ./obj
 
@@ -11,7 +12,7 @@ TARGET = crepl
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(TARGET) $(OBJS)
 
 $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
