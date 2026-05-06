@@ -72,6 +72,8 @@ void dynamic_array_free(dynamic_array *da) {
  * Tokens
  */
 typedef enum token_kind {
+  TOKEN_INVALID = 0,
+
   TOKEN_TERM,
 
   TOKEN_OPERATION_ADDITION,
@@ -84,7 +86,6 @@ typedef enum token_kind {
   TOKEN_BRACKET_OPEN,
   TOKEN_BRACKET_CLOSE,
 
-  TOKEN_INVALID,
   TOKEN_END,
 } token_kind;
 
@@ -155,6 +156,8 @@ void tokenize(dynamic_array *tokens, char *buffer) {
  * AST
  */
 typedef enum expr_kind {
+  EXPR_INVALID = 0,
+
   EXPR_TERM,
 
   EXPR_ADD,
@@ -183,6 +186,27 @@ typedef struct expr_node {
   };
 } expr_node;
 
+void free_expr(expr_node *expr) {
+  if (!expr)
+    return;
+
+  switch (expr->kind) {
+  case EXPR_UNARY_NEGATE:
+    free_expr(expr->unary.operand);
+    break;
+
+  case EXPR_TERM:
+    break;
+
+  default:
+    free_expr(expr->binary.left);
+    free_expr(expr->binary.right);
+    break;
+  }
+
+  free(expr);
+}
+
 /*
  * Parser
  */
@@ -202,156 +226,145 @@ void parser_current(parser *p, token *token) {
 
 void parser_advance(parser *p) { p->position++; }
 
-expr_node *parse_expr(parser *p);
+// Binding powers for each token
+int lbp[] = {
+    0, // TOKEN_INVALID
 
-void free_expr(expr_node *expr); /* forward decl needed by parse_factor */
+    0, // TOKEN_TERM
 
-expr_node *parse_factor(parser *p) {
-  token token;
-  parser_current(p, &token);
+    10, // TOKEN_OPERATION_ADDITION
+    10, // TOKEN_OPERATION_SUBTRACTION
+    20, // TOKEN_OPERATION_MULTIPLICATION
+    20, // TOKEN_OPERATION_DIVISION
+    20, // TOKEN_OPERATION_MODULO
+    30, // TOKEN_OPERATION_EXPONENTIATION
 
-  if (token.kind == TOKEN_TERM) {
-    expr_node *node = malloc(sizeof(expr_node));
-    node->kind = EXPR_TERM;
-    node->term = token.value;
-    parser_advance(p);
-    return node;
+    0, // TOKEN_BRACKET_OPEN
+    0, // TOKEN_BRACKET_CLOSE
+
+    0, // TOKEN_END
+};
+
+int rbp[] = {
+    0, // TOKEN_INVALID
+
+    0, // TOKEN_TERM
+
+    10, // TOKEN_OPERATION_ADDITION
+    10, // TOKEN_OPERATION_SUBTRACTION
+    20, // TOKEN_OPERATION_MULTIPLICATION
+    20, // TOKEN_OPERATION_DIVISION
+    20, // TOKEN_OPERATION_MODULO
+    29, // TOKEN_OPERATION_EXPONENTIATION
+
+    0, // TOKEN_BRACKET_OPEN
+    0, // TOKEN_BRACKET_CLOSE
+
+    0, // TOKEN_END
+};
+
+expr_node *parse_expr(parser *p, int bp) {
+  token tok;
+  parser_current(p, &tok);
+  parser_advance(p);
+  expr_node *left = NULL;
+
+  // null denotation
+  if (tok.kind == TOKEN_TERM) {
+    left = malloc(sizeof(expr_node));
+    left->kind = EXPR_TERM;
+    left->term = tok.value;
   }
 
-  else if (token.kind == TOKEN_OPERATION_SUBTRACTION) {
-    parser_advance(p);
-    expr_node *operand = parse_factor(p);
+  else if (tok.kind == TOKEN_OPERATION_SUBTRACTION) {
+    expr_node *operand = parse_expr(p, 40);
     if (!operand)
       return NULL;
-    expr_node *node = malloc(sizeof(expr_node));
-    node->kind = EXPR_UNARY_NEGATE;
-    node->unary.operand = operand;
-    return node;
+
+    left = malloc(sizeof(expr_node));
+    left->kind = EXPR_UNARY_NEGATE;
+    left->unary.operand = operand;
   }
 
-  else if (token.kind == TOKEN_BRACKET_OPEN) {
-    parser_advance(p);
-    expr_node *node = parse_expr(p);
-    if (!node)
+  else if (tok.kind == TOKEN_BRACKET_OPEN) {
+    left = parse_expr(p, 0);
+    if (!left)
       return NULL;
-    parser_current(p, &token);
-    if (token.kind != TOKEN_BRACKET_CLOSE) {
+
+    parser_current(p, &tok);
+    if (tok.kind != TOKEN_BRACKET_CLOSE) {
       fprintf(stderr, "Syntax error: expected ')'\n");
-      free_expr(node);
+      free_expr(left);
       return NULL;
     }
+
     parser_advance(p);
-    return node;
   }
 
   else {
-    fprintf(stderr, "Syntax error: expected term or '('\n");
+    fprintf(stderr, "Syntax error: unexpected token\n");
     return NULL;
   }
-}
 
-expr_node *parse_power(parser *p) {
-  expr_node *left = parse_factor(p);
-  if (!left)
-    return NULL;
+  // left denotation
+  while (1) {
+    parser_current(p, &tok);
+    if (lbp[tok.kind] <= bp)
+      break;
 
-  token token;
-  parser_current(p, &token);
-
-  if (token.kind == TOKEN_OPERATION_EXPONENTIATION) {
     parser_advance(p);
 
-    expr_node *right = parse_power(p);
+    expr_node *right = parse_expr(p, rbp[tok.kind]);
     if (!right) {
       free_expr(left);
       return NULL;
     }
 
-    expr_node *parent = malloc(sizeof(expr_node));
-    parent->kind = EXPR_EXPONENTIATION;
-    parent->binary.left = left;
-    parent->binary.right = right;
+    expr_node *node = malloc(sizeof(expr_node));
 
-    return parent;
-  }
-
-  return left;
-}
-
-expr_node *parse_term(parser *p) {
-  expr_node *left = parse_power(p);
-  if (!left)
-    return NULL;
-
-  while (1) {
-    token token;
-    parser_current(p, &token);
-
-    if (token.kind == TOKEN_OPERATION_MULTIPLICATION ||
-        token.kind == TOKEN_OPERATION_DIVISION ||
-        token.kind == TOKEN_OPERATION_MODULO) {
-      parser_advance(p);
-
-      expr_node *right = parse_power(p);
-      if (!right) {
-        free_expr(left);
-        return NULL;
-      }
-
-      expr_node *parent = malloc(sizeof(expr_node));
-
-      if (token.kind == TOKEN_OPERATION_MULTIPLICATION)
-        parent->kind = EXPR_MULTIPLY;
-      else if (token.kind == TOKEN_OPERATION_DIVISION)
-        parent->kind = EXPR_DIVIDE;
-      else
-        parent->kind = EXPR_MODULO;
-
-      parent->binary.left = left;
-      parent->binary.right = right;
-
-      left = parent;
-    } else {
+    switch (tok.kind) {
+    case TOKEN_OPERATION_ADDITION:
+      node->kind = EXPR_ADD;
       break;
-    }
-  }
 
-  return left;
-}
-
-expr_node *parse_expr(parser *p) {
-  expr_node *left = parse_term(p);
-
-  if (!left)
-    return NULL;
-
-  while (1) {
-    token token;
-    parser_current(p, &token);
-
-    if (token.kind == TOKEN_OPERATION_ADDITION ||
-        token.kind == TOKEN_OPERATION_SUBTRACTION) {
-      parser_advance(p);
-      expr_node *right = parse_term(p);
-
-      if (!right) {
-        free_expr(left);
-        return NULL;
-      }
-
-      expr_node *parent = malloc(sizeof(expr_node));
-      parent->kind =
-          (token.kind == TOKEN_OPERATION_ADDITION) ? EXPR_ADD : EXPR_SUBTRACT;
-      parent->binary.left = left;
-      parent->binary.right = right;
-      left = parent;
-    } else {
+    case TOKEN_OPERATION_SUBTRACTION:
+      node->kind = EXPR_SUBTRACT;
       break;
+
+    case TOKEN_OPERATION_MULTIPLICATION:
+      node->kind = EXPR_MULTIPLY;
+      break;
+
+    case TOKEN_OPERATION_DIVISION:
+      node->kind = EXPR_DIVIDE;
+      break;
+
+    case TOKEN_OPERATION_MODULO:
+      node->kind = EXPR_MODULO;
+      break;
+
+    case TOKEN_OPERATION_EXPONENTIATION:
+      node->kind = EXPR_EXPONENTIATION;
+      break;
+
+    default:
+      fprintf(stderr, "Syntax error: unexpected operator\n");
+      free_expr(left);
+      free(node);
+      return NULL;
     }
+
+    node->binary.left = left;
+    node->binary.right = right;
+    left = node;
   }
+
   return left;
 }
 
+/*
+ * Evaluation
+ */
 float evaluate_expr(expr_node *parent_expr) {
   switch (parent_expr->kind) {
   case EXPR_TERM:
@@ -400,27 +413,6 @@ float evaluate_expr(expr_node *parent_expr) {
   }
 }
 
-void free_expr(expr_node *expr) {
-  if (!expr)
-    return;
-
-  switch (expr->kind) {
-  case EXPR_UNARY_NEGATE:
-    free_expr(expr->unary.operand);
-    break;
-
-  case EXPR_TERM:
-    break;
-
-  default:
-    free_expr(expr->binary.left);
-    free_expr(expr->binary.right);
-    break;
-  }
-
-  free(expr);
-}
-
 int main() {
   while (1) {
     char buffer[1024];
@@ -438,7 +430,7 @@ int main() {
 
     parser p;
     parser_init(&tokens, &p);
-    expr_node *root_expr = parse_expr(&p);
+    expr_node *root_expr = parse_expr(&p, 0);
 
     if (root_expr)
       printf("  = %.2f\n", evaluate_expr(root_expr));
